@@ -1,5 +1,4 @@
-
-;;; feebleline.el --- Replace modeline with a slimmer proxy
+;;; feebleline.el --- Replace modeline with a slimmer proxy -*- lexical-binding: t; -*-
 
 ;; Copyright 2018 Benjamin Lindqvist
 
