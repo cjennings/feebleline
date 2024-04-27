@@ -6,7 +6,9 @@
 ;; Maintainer: Benjamin Lindqvist <benjamin.lindqvist@gmail.com>
 ;; URL: https://github.com/tautologyclub/feebleline
 ;; Package-Version: 2.0
+;; Package-Requires: ((emacs "25.1"))
 ;; Version: 2.0
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
@@ -24,8 +26,6 @@
 ;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 ;;; Commentary:
-
-;; For hardline Luddite editing!
 
 ;; Feebleline removes the modeline and replaces it with a slimmer proxy
 ;; version, which displays some basic information in the echo area
@@ -56,32 +56,12 @@
 ;; See source code for inspiration.
 
 ;;; Code:
-(require 'cl-macs)
+(require 'cl-lib)
+(require 'subr-x)
 (autoload 'magit-get-current-branch "magit")
 
-(defun feebleline-git-branch ()
-  "Return current git branch, unless file is remote."
-  (if (and (buffer-file-name) (file-remote-p (buffer-file-name)))
-      ""
-    (let ((branch (shell-command-to-string
-                   "git rev-parse --symbolic-full-name --abbrev-ref HEAD 2>/dev/null")))
-      (string-trim (replace-regexp-in-string
-                    "^HEAD" "(detached HEAD)"
-                    branch)))
-    ))
-
-(defcustom feebleline-msg-functions
-  '((feebleline-line-number         :post "" :fmt "%5s")
-    (feebleline-column-number       :pre ":" :fmt "%-2s")
-    (feebleline-file-directory      :face feebleline-dir-face :post "")
-    (feebleline-file-or-buffer-name :face font-lock-keyword-face :post "")
-    (feebleline-file-modified-star  :face font-lock-warning-face :post "")
-    (feebleline-git-branch          :face feebleline-git-face :pre " - ")
-    ;; (feebleline-project-name        :align right)
-    )
-  "Fixme -- document me."
-  :type  'list
-  :group 'feebleline)
+;; tell byte-compiler this is a valid function defined at runtime
+(declare-function tramp-tramp-file-p "tramp")
 
 (defcustom feebleline-timer-interval 0.1
   "Refresh interval of feebleline mode-line proxy."
@@ -91,25 +71,87 @@
 (defcustom feebleline-use-legacy-settings nil
   "Hacky settings only applicable to releases older than 25."
   :type  'boolean
-  :group 'feebleline
-  )
+  :group 'feebleline)
 
-(defvar feebleline--home-dir nil)
-(defvar feebleline--msg-timer)
-(defvar feebleline--mode-line-format-previous)
-(defvar feebleline--window-divider-previous)
-(defvar feebleline-last-error-shown nil)
+(defface feebleline-file-or-buffer-face
+  '((t :inherit default :foreground "#2EDAFF"))
+  "The default custom face for feebleline."
+  :group 'feebleline)
 
-(defface feebleline-git-face '((t :foreground "#444444"))
+(defface feebleline-git-face
+  '((t :inherit default :foreground "#e6b400"))
   "Example face for git branch."
   :group 'feebleline)
 
-(defface feebleline-dir-face '((t :inherit 'font-lock-variable-name-face))
+(defface feebleline-dir-face
+  '((t :inherit 'font-lock-variable-name-face))
   "Example face for dir face."
   :group 'feebleline)
 
+(defvar feebleline--home-dir nil
+  "The user's home directory, stored as an absolute file name.
+This variable is used to abbreviate file paths in feebleline messages.")
+
+(defvar-local feebleline--msg-timer nil
+  "Timer object for mode line updates in the current buffer.
+This variable is buffer-local.")
+
+(defvar-local feebleline--mode-line-format-previous nil
+  "Backup storage for the previous mode line format in the current buffer.
+This variable is buffer-local.")
+
+(defvar feebleline--window-divider-previous nil
+  "Previous window divider setting before feebleline mode was enabled.
+This variable is used to restore the old setting when feebleline mode is
+disabled.")
+
+(defvar feebleline-last-error-shown nil
+  "The last error that was displayed by feebleline mode.
+This variable is used to prevent the same error from being displayed
+repeatedly.")
+
+(defun feebleline-git-branch ()
+  "Return current git branch, unless file is remote."
+  (if (or (null (buffer-file-name))
+          (file-remote-p (buffer-file-name))
+          (tramp-tramp-file-p (buffer-file-name)))
+      ""
+    (let ((branch (shell-command-to-string
+                   "git rev-parse --symbolic-full-name --abbrev-ref HEAD 2>/dev/null")))
+      (string-trim (replace-regexp-in-string
+                    "^HEAD" "(detached HEAD)"
+					branch)))))
+
+(defcustom feebleline-msg-functions
+  '((feebleline-line-number         :post "" :fmt "%5s")
+    (feebleline-column-number       :pre ":" :fmt "%-2s")
+    (feebleline-file-directory      :face feebleline-dir-face :post "")
+    (feebleline-file-or-buffer-name :face feebleline-file-or-buffer-face :post "")
+    (feebleline-file-modified-star  :face feebleline-file-or-buffer-face :post "")
+    (feebleline-git-branch          :face feebleline-git-face :pre " - ")
+    ;; (feebleline-project-name        :align right)
+    )
+  "List of functions or elements to display in the echo area.
+Each element is a function giving a string to display directly or a list where:
+- The first element is the function.
+- The other elements are keyword-value pairs for advanced formatting options.
+
+Available keywords are:
+- :pre, an optional string to insert before the function output.
+- :post, an optional string to insert after the function output.
+- :fmt, a format string, defaults to \"%s\".
+- :face, a optional face to apply to the whole string.
+- :align, an optional symbol specifying alignment (\='left or \='right).
+
+:align \='right will align the output string to the right of the echo area."
+  :type  '(repeat sexp)
+  :group 'feebleline)
+
 (defun feebleline-linecol-string ()
-  "Hey guy!"
+  "Return a formatted string displaying the current line and column number.
+The line number is formatted to occupy exactly 4 spaces, and the
+column number exactly 2 spaces, separated by a colon.
+For example, the string for line 120 and column 15 would be ' 120:15'."
   (format "%4s:%-2s" (format-mode-line "%l") (current-column)))
 
 (defun feebleline-previous-buffer-name ()
@@ -154,10 +196,6 @@
   "Macro for adding B to the feebleline mode-line, at the beginning."
   `(add-to-list 'feebleline-msg-functions ,@b nil (lambda (x y) nil)))
 
-;; (feebleline-append-msg-function '((lambda () "end") :pre "//"))
-;; (feebleline-append-msg-function '(magit-get-current-branch :post "<-- branch lolz"))
-;; (feebleline-prepend-msg-function '((lambda () "-") :face hey-i-want-some-new-fae))
-
 (defun feebleline-default-settings-on ()
   "Some default settings that works well with feebleline."
   (setq window-divider-default-bottom-width 1
@@ -187,11 +225,23 @@
   (condition-case nil (feebleline--clear-echo-area)
     (error nil)))
 
-(defvar feebleline--minibuf " *Minibuf-0*")
+(defvar feebleline--minibuf " *Minibuf-0*"
+  "Buffer name used by feebleline for displaying messages.
+This buffer is primarily used to overwrite the echo area.")
 
-(cl-defun feebleline--insert-func (func &key (face 'default) pre (post " ") (fmt "%s") (align 'left))
-  "Format an element of feebleline-msg-functions based on its properties.
-Returns a pair with desired column and string."
+(cl-defun feebleline--insert-func (func &key (face 'default) pre (post " ")
+                                        (fmt "%s") (align 'left))
+  "Format an element of \='feebleline-msg-functions\=' based on its properties.
+- FUNC is the function used to generate the message.
+- FACE is an optional face to apply to the whole string, defaults to \='default.
+- PRE is an optional string to insert before the function output.
+- POST is an optional string to insert after the function output,
+  defaults to a single space.
+- FMT is a format string, defaults to \"%s\".
+- ALIGN is an optional symbol specifying alignment (\='left or \='right),
+  defaults to \='left.
+
+Returns a pair with align setting and the resulting string."
   (list align
         (let* ((msg (apply func nil))
                (string (concat pre (format fmt msg) post)))
@@ -210,7 +260,13 @@ Returns a pair with desired column and string."
         (let* ((fragment (apply 'feebleline--insert-func idx))
                (align (car fragment))
                (string (cadr fragment)))
-          (push string (symbol-value align))))
+          (cond
+           ((eq align 'left)
+            (push string left))
+           ((eq align 'right)
+            (push string right))
+           (t
+            (push string left))))) ; default to left if not specified
       (with-current-buffer feebleline--minibuf
         (erase-buffer)
         (let* ((left-string (string-join (reverse left)))
@@ -224,8 +280,12 @@ Returns a pair with desired column and string."
 (defun feebleline--clear-echo-area ()
   "Erase echo area."
   (with-current-buffer feebleline--minibuf
-    (erase-buffer)))
+	(erase-buffer)))
 
+(defgroup feebleline nil
+  "Feebleline customizations."
+  :prefix "feebleline-"
+  :group 'convenience)
 
 ;;;###autoload
 (define-minor-mode feebleline-mode
@@ -233,29 +293,45 @@ Returns a pair with desired column and string."
   :require 'feebleline
   :global t
   (if feebleline-mode
-      ;; Activation:
-      (progn
-        (setq feebleline--home-dir (expand-file-name "~"))
-        (setq feebleline--mode-line-format-previous mode-line-format)
-        (setq feebleline--msg-timer
-              (run-with-timer 0 feebleline-timer-interval
-                              'feebleline--insert-ignore-errors))
-        (if feebleline-use-legacy-settings (feebleline-legacy-settings-on)
-          (feebleline-default-settings-on))
-        (add-hook 'focus-in-hook 'feebleline--insert-ignore-errors))
-    ;; Deactivation:
-    (window-divider-mode feebleline--window-divider-previous)
-    (set-face-attribute 'mode-line nil :height 1.0)
-    (setq-default mode-line-format feebleline--mode-line-format-previous)
-    (walk-windows (lambda (window)
-                    (with-selected-window window
-                      (setq mode-line-format feebleline--mode-line-format-previous)))
-                  nil t)
+	  ;; Activation:
+	  (progn
+		(setq feebleline--home-dir (expand-file-name "~"))
+		(setq feebleline--mode-line-format-previous mode-line-format)
+		(setq feebleline--msg-timer
+			  (run-with-timer 0 feebleline-timer-interval
+							  'feebleline--insert-ignore-errors))
+		(if feebleline-use-legacy-settings (feebleline-legacy-settings-on)
+		  (feebleline-default-settings-on))
+		(add-function :after after-focus-change-function 'feebleline--insert-ignore-errors))
+	;; Deactivation:
+	(window-divider-mode feebleline--window-divider-previous)
+	(set-face-attribute 'mode-line nil :height 1.0)
+	(setq-default mode-line-format feebleline--mode-line-format-previous)
+	(walk-windows (lambda (window)
+					(with-selected-window window
+					  (setq mode-line-format feebleline--mode-line-format-previous)))
+				  nil t)
     (cancel-timer feebleline--msg-timer)
-    (remove-hook 'focus-in-hook 'feebleline--insert-ignore-errors)
-    (force-mode-line-update)
-    (redraw-display)
-    (feebleline--clear-echo-area)))
+	(remove-function after-focus-change-function 'feebleline--insert-ignore-errors)
+	(force-mode-line-update)
+	(redraw-display)
+	(feebleline--clear-echo-area)))
+
+(defun feebleline-disable ()
+  "Neutralise \='feebleline-mode\='.
+This is meant to be used in a hook, before a conflictual command."
+  (when feebleline-mode
+	(cancel-timer feebleline--msg-timer)
+	(remove-function after-focus-change-function 'feebleline--insert-ignore-errors)))
+
+(defun feebleline-reenable ()
+  "Re-enable \='feebleline-mode\='.
+This is meant to be used in a hook, after a conflictual command."
+  (when feebleline-mode
+	(setq feebleline--msg-timer
+		  (run-with-timer 0 feebleline-timer-interval
+						  'feebleline--insert-ignore-errors))
+	(add-function :after after-focus-change-function 'feebleline--insert-ignore-errors)))
 
 (provide 'feebleline)
 ;;; feebleline.el ends here
