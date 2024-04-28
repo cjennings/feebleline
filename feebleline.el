@@ -38,18 +38,6 @@
 ;; for anything else (but if you switch frame/window, it will replace whatever
 ;; message is currently displayed).
 
-;; Feebleline now has a much improved customization interface. Simply set
-;; feebleline-msg-functions to whatever you want! Example:
-
-;; (setq
-;;  feebleline-msg-functions
-;;  '((feebleline-line-number)
-;;    (feebleline-column-number)
-;;    (feebleline-file-directory)
-;;    (feebleline-file-or-buffer-name)
-;;    (feebleline-buffer-modified-star)
-;;    (projectile-project-name)))
-
 ;; The elements should be functions, accepting no arguments, returning either
 ;; nil or a valid string. Even lambda functions work (but don't forget to quote
 ;; them). Optionally, you can include keywords after each function, like so:
@@ -78,87 +66,58 @@
   :type  'float
   :group 'feebleline)
 
-;; --------------------------------- Font Faces --------------------------------
-
-(defface feebleline-buffer-name-face
-  '((t :inherit 'font-lock-string-face))
-  "The default face used to display file and buffer names."
-  :group 'feebleline)
-
-(defface feebleline-vc-info-face
-  '((t :inherit 'font-lock-keyword-face))
-  "The default face used to display version control project names and branches."
-  :group 'feebleline)
-
-(defface feebleline-dir-name-face
-  '((t :inherit 'font-lock-comment-face))
-  "The default face used to display directory paths."
-  :group 'feebleline)
-
 ;; ----------------------------- Internal Variables ----------------------------
 
 (defvar feebleline--home-dir nil
-  "The user's home directory, stored as an absolute file name.
-This variable is used to abbreviate file paths in feebleline messages.")
+  "The user's home directory.
+This variable is used to abbreviate file paths in feebleline messages.
+Set during feebleline-mode activation.")
 
 (defvar-local feebleline--msg-timer nil
   "Timer object for mode line updates in the current buffer.")
 
-(defvar-local feebleline--mode-line-format-previous nil
+(defvar-local feebleline--original-mode-line-format nil
   "Backup storage for the previous mode line format in the current buffer.")
 
-(defvar feebleline--window-divider-previous nil
+(defvar feebleline--original-window-divider-setting nil
   "Previous window divider setting before feebleline mode was enabled.
 This variable is used to restore the old setting when feebleline mode is
 disabled.")
 
-(defvar feebleline-last-error-shown nil
+(defvar feebleline--last-error-shown nil
   "The last error that was displayed by feebleline mode.
 This variable is used to prevent the same error from being displayed
 repeatedly.")
 
-;; ----------------------------- Display Functions -----------------------------
+(defvar feebleline--minibuf " *Minibuf-0*"
+  "Buffer name used by feebleline for displaying messages.
+This buffer is primarily used to overwrite the echo area.")
 
-(defcustom feebleline-msg-functions
-  '((feebleline-line-column-info     :face default)
-	(feebleline-vc-info              :face feebleline-vc-info-face :align right)
-	(feebleline-file-directory       :face feebleline-dir-name-face :post "")
-	(feebleline-file-or-buffer-name  :face feebleline-buffer-name-face)
-	(feebleline-buffer-modified-star :face feebleline-buffer-name-face))
-  "List of functions or elements to display in the echo area.
-Each element is a function giving a string to display directly or a list where:
-- The first element is the function.
-- The other elements are keyword-value pairs for advanced formatting options.
+;; -------------------------- Line And Column Element --------------------------
 
-Available keywords are:
-- :pre, an optional string to insert before the function output.
-- :post, an optional string to insert after the function output.
-- :fmt, a format string, defaults to \"%s\".
-- :face, a optional face to apply to the whole string.
-- :align, an optional symbol specifying alignment (\='left or \='right).
-
-:align \='right will align the output string to the right of the echo area."
-  :type  '(repeat sexp)
+(defface feebleline-line-column-face
+  '((t :inherit 'default :foreground "#E37464"))
+  "The default face used to display version control project names and branches."
   :group 'feebleline)
-
-;; ------------------------ Line And Column Information ------------------------
 
 (defun feebleline-line-column-info ()
   "Return a formatted string displaying the current line and column number.
-The line number is formatted to occupy exactly 4 spaces, and the
-column number exactly 2 spaces, separated by a colon.
-For example, the string for line 120 and column 15 would be ' 120:15'."
-  (format "%4s:%-2s" (format-mode-line "%l") (current-column)))
+The line number is formatted to occupy 5 spaces, and the
+column number exactly 3 spaces, separated by a colon.
+For example, the string for line 120 and column 15 would be '  120:15 '."
+  (format "%5s:%-3s" (format "%s" (line-number-at-pos)) (current-column)))
 
-(defun feebleline-line-number ()
-  "Line number as string."
-  (format "%s" (line-number-at-pos)))
+;; ----------------- Buffer Name Or File Name With Path Element ----------------
 
-(defun feebleline-column-number ()
-  "Column number as string."
-  (format "%s" (current-column)))
+(defface feebleline-dir-name-face
+  '((t :inherit 'default :foreground "#5E4D37"))
+  "The default face used to display directory paths."
+  :group 'feebleline)
 
-;; ------------------------ File And Buffer Information ------------------------
+(defface feebleline-buffer-name-face
+  '((t :inherit 'default :foreground "#2B61B6"))
+  "The default face used to display file and buffer names."
+  :group 'feebleline)
 
 (defun feebleline-file-directory ()
   "Return the directory if buffer is displaying a file."
@@ -177,7 +136,12 @@ For example, the string for line 120 and column 15 would be ' 120:15'."
   "Return a star if buffer was modified."
   (when (and (buffer-file-name) (buffer-modified-p)) "*"))
 
-;; ------------------------------- VC Information ------------------------------
+;; --------------------------- VC Information Element --------------------------
+
+(defface feebleline-vc-info-face
+  '((t :inherit 'default :foreground "#94E151"))
+  "The default face used to display version control project names and branches."
+  :group 'feebleline)
 
 (defun feebleline-vc-project-name ()
   "Return project name if exists."
@@ -207,36 +171,54 @@ When the project name doesn't exist, return nil."
 	(if project-name (concat project-name " " branch)
 	  nil)))
 
-;; -------------------------------- Positioning --------------------------------
+;; -------------------------------- Element List -------------------------------
+
+(defcustom feebleline-element-list
+  '(
+	(feebleline-vc-info              :face feebleline-vc-info-face :align right)
+	(feebleline-file-directory       :face feebleline-dir-name-face :post "")
+	;; the message to invalid face reference is with file-or-buffer-name
+	;; here in the next line when it tries to apply to file or buffer name
+	(feebleline-file-or-buffer-name  :post "")
+	(feebleline-buffer-modified-star :face feebleline-buffer-name-face)
+	(feebleline-line-column-info     :face feebleline-line-column-face)
+	)
+  "List of functions or elements to display in the echo area.
+Each element is a function giving a string to display directly or a list where:
+- The first element is the function.
+- The other elements are keyword-value pairs for advanced formatting options.
+
+Available keywords are:
+- :pre, an optional string to insert before the function output.
+- :post, an optional string to insert after the function output.
+- :fmt, a format string, defaults to \"%s\".
+- :face, a optional face to apply to the whole string.
+- :align, an optional symbol specifying alignment (\='left or \='right).
+Example:
+:align \='right will align the output string to the right of the echo area.
+
+Note: an empty space is automatically inserted after each element. To avoid
+this, the element should end with :post \"\""
+
+  :type  '(repeat sexp)
+  :group 'feebleline)
+
+;; ---------------------------- Echo Area Insertion ----------------------------
 
 (defmacro feebleline-append-msg-function (&rest b)
   "Macro for adding B to the feebleline mode-line, at the end."
-  `(add-to-list 'feebleline-msg-functions ,@b t (lambda (x y) nil)))
+  `(add-to-list 'feebleline-element-list ,@b t (lambda (x y) nil)))
 
 (defmacro feebleline-prepend-msg-function (&rest b)
   "Macro for adding B to the feebleline mode-line, at the beginning."
-  `(add-to-list 'feebleline-msg-functions ,@b nil (lambda (x y) nil)))
-
-(defun feebleline-default-settings-on ()
-  "Some default settings that work well with feebleline."
-  (setq window-divider-default-bottom-width 1
-		window-divider-default-places (quote bottom-only))
-  (setq feebleline--window-divider-previous window-divider-mode)
-  (window-divider-mode 1)
-  (setq-default mode-line-format nil)
-  (walk-windows (lambda (window)
-				  (with-selected-window window
-					(setq mode-line-format nil)))
-				nil t))
-
-;; ---------------------------- Insertion Functions ----------------------------
+  `(add-to-list 'feebleline-element-list ,@b nil (lambda (x y) nil)))
 
 (defun feebleline--insert-ignore-errors ()
   "Insert stuff into the echo area, ignoring potential errors."
   (unless (current-message)
 	(condition-case err (feebleline--insert)
-	  (error (unless (equal feebleline-last-error-shown err)
-			   (setq feebleline-last-error-shown err)
+	  (error (unless (equal feebleline--last-error-shown err)
+			   (setq feebleline--last-error-shown err)
 			   (message (format "feebleline error: %s" err)))))))
 
 (defun feebleline--force-insert ()
@@ -244,13 +226,9 @@ When the project name doesn't exist, return nil."
   (condition-case nil (feebleline--clear-echo-area)
 	(error nil)))
 
-(defvar feebleline--minibuf " *Minibuf-0*"
-  "Buffer name used by feebleline for displaying messages.
-This buffer is primarily used to overwrite the echo area.")
-
 (cl-defun feebleline--insert-func (func &key (face 'default) pre (post " ")
 										(fmt "%s") (align 'left))
-  "Format an element of \='feebleline-msg-functions\=' based on its properties.
+  "Format an element of \='feebleline-element-list\=' based on its properties.
 - FUNC is the function used to generate the message.
 - FACE is an optional face to apply to the whole string, defaults to \='default.
 - PRE is an optional string to insert before the function output.
@@ -275,7 +253,7 @@ Returns a pair with align setting and the resulting string."
   (unless (current-message)
 	(let ((left ())
 		  (right ()))
-	  (dolist (idx feebleline-msg-functions)
+	  (dolist (idx feebleline-element-list)
 		(let* ((fragment (apply 'feebleline--insert-func idx))
 			   (align (car fragment))
 			   (string (cadr fragment)))
@@ -300,7 +278,7 @@ Returns a pair with align setting and the resulting string."
 												   right-string)))))))))
 
 (defun feebleline--clear-echo-area ()
-  "Erase echo area."
+  "Erase the echo area."
   (with-current-buffer feebleline--minibuf
 	(erase-buffer)))
 
@@ -315,21 +293,21 @@ Returns a pair with align setting and the resulting string."
 	  ;; Activation:
 	  (progn
 		(setq feebleline--home-dir (expand-file-name "~"))
-		(setq feebleline--mode-line-format-previous mode-line-format)
+		(setq feebleline--original-mode-line-format mode-line-format)
 		(setq feebleline--msg-timer
 			  (run-with-timer 0 feebleline-timer-interval
 							  'feebleline--insert-ignore-errors))
-		(feebleline-default-settings-on)
+		(feebleline-appearance-settings-on)
 		(add-function :after after-focus-change-function
 					  'feebleline--insert-ignore-errors))
 	;; Deactivation:
-	(window-divider-mode feebleline--window-divider-previous)
+	(window-divider-mode feebleline--original-window-divider-setting)
 	(set-face-attribute 'mode-line nil :height 1.0)
-	(setq-default mode-line-format feebleline--mode-line-format-previous)
+	(setq-default mode-line-format feebleline--original-mode-line-format)
 	(walk-windows (lambda (window)
 					(with-selected-window window
 					  (setq mode-line-format
-							feebleline--mode-line-format-previous)))
+							feebleline--original-mode-line-format)))
 				  nil t)
 	(cancel-timer feebleline--msg-timer)
 	(remove-function after-focus-change-function
@@ -339,11 +317,27 @@ Returns a pair with align setting and the resulting string."
 	(redraw-display)
 	(feebleline--clear-echo-area)))
 
+;; ----------------------- Feebleline Appearance Settings ----------------------
+
+(defun feebleline-appearance-settings-on ()
+  "The appearance settings for feebleline.
+Set window divider to 1 pixel and place at bottom. Save original settings to be
+restored once feebleline mode is deactivated."
+  (setq window-divider-default-bottom-width 1
+		window-divider-default-places (quote bottom-only))
+  (setq feebleline--original-window-divider-setting window-divider-mode)
+  (window-divider-mode 1)
+  (setq-default mode-line-format nil)
+  (walk-windows (lambda (window)
+				  (with-selected-window window
+					(setq mode-line-format nil)))
+				nil t))
+
 ;; ---------------------------- Disable And Reenable ---------------------------
 
 (defun feebleline-disable ()
   "Disable \='feebleline-mode\='.
-This is meant to be used in a hook, before a conflicting command."
+This is meant to be used in a hook, before issuing a conflicting command."
   (when feebleline-mode
 	(cancel-timer feebleline--msg-timer)
 	(remove-function after-focus-change-function
@@ -351,7 +345,7 @@ This is meant to be used in a hook, before a conflicting command."
 
 (defun feebleline-reenable ()
   "Re-enable \='feebleline-mode\='.
-This is meant to be used in a hook, after a conflicting command."
+This is meant to be used in a hook, after issuing a conflicting command."
   (when feebleline-mode
 	(setq feebleline--msg-timer
 		  (run-with-timer 0 feebleline-timer-interval
