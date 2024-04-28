@@ -4,7 +4,12 @@
 
 ;; Author: Benjamin Lindqvist <benjamin.lindqvist@gmail.com>
 ;; Maintainer: Benjamin Lindqvist <benjamin.lindqvist@gmail.com>
+
+;; Contributions: Craig Jennings <c@cjennings.net>
+
 ;; URL: https://github.com/tautologyclub/feebleline
+;; Fork URL: https://github.com/cjennings/feebleline
+
 ;; Package-Version: 2.0
 ;; Package-Requires: ((emacs "25.1"))
 ;; Version: 2.0
@@ -42,13 +47,12 @@
 ;;    (feebleline-column-number)
 ;;    (feebleline-file-directory)
 ;;    (feebleline-file-or-buffer-name)
-;;    (feebleline-file-modified-star)
-;;    (magit-get-current-branch)
+;;    (feebleline-buffer-modified-star)
 ;;    (projectile-project-name)))
 
 ;; The elements should be functions, accepting no arguments, returning either
 ;; nil or a valid string. Even lambda functions work (but don't forget to quote
-;; them). Optionally, you can include keywords  after each function, like so:
+;; them). Optionally, you can include keywords after each function, like so:
 
 ;; (feebleline-line-number :post "" :fmt "%5s")
 
@@ -58,47 +62,50 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'subr-x)
-(autoload 'magit-get-current-branch "magit")
 
 ;; tell byte-compiler this is a valid function defined at runtime
 (declare-function tramp-tramp-file-p "tramp")
 
-(defcustom feebleline-timer-interval 0.1
+;; ------------------------------ Custom Variables -----------------------------
+
+(defgroup feebleline nil
+  "Feebleline customizations."
+  :prefix "feebleline-"
+  :group 'convenience)
+
+(defcustom feebleline-timer-interval 0.5
   "Refresh interval of feebleline mode-line proxy."
   :type  'float
   :group 'feebleline)
 
-(defcustom feebleline-use-legacy-settings nil
-  "Hacky settings only applicable to releases older than 25."
-  :type  'boolean
+;; --------------------------------- Font Faces --------------------------------
+
+(defface feebleline-buffer-name-face
+  '((t :inherit 'font-lock-string-face))
+  "The default face used to display file and buffer names."
   :group 'feebleline)
 
-(defface feebleline-file-or-buffer-face
-  '((t :inherit default :foreground "#2EDAFF"))
-  "The default custom face for feebleline."
+(defface feebleline-vc-info-face
+  '((t :inherit 'font-lock-keyword-face))
+  "The default face used to display version control project names and branches."
   :group 'feebleline)
 
-(defface feebleline-git-face
-  '((t :inherit default :foreground "#e6b400"))
-  "Example face for git branch."
+(defface feebleline-dir-name-face
+  '((t :inherit 'font-lock-comment-face))
+  "The default face used to display directory paths."
   :group 'feebleline)
 
-(defface feebleline-dir-face
-  '((t :inherit 'font-lock-variable-name-face))
-  "Example face for dir face."
-  :group 'feebleline)
+;; ----------------------------- Internal Variables ----------------------------
 
 (defvar feebleline--home-dir nil
   "The user's home directory, stored as an absolute file name.
 This variable is used to abbreviate file paths in feebleline messages.")
 
 (defvar-local feebleline--msg-timer nil
-  "Timer object for mode line updates in the current buffer.
-This variable is buffer-local.")
+  "Timer object for mode line updates in the current buffer.")
 
 (defvar-local feebleline--mode-line-format-previous nil
-  "Backup storage for the previous mode line format in the current buffer.
-This variable is buffer-local.")
+  "Backup storage for the previous mode line format in the current buffer.")
 
 (defvar feebleline--window-divider-previous nil
   "Previous window divider setting before feebleline mode was enabled.
@@ -110,27 +117,14 @@ disabled.")
 This variable is used to prevent the same error from being displayed
 repeatedly.")
 
-(defun feebleline-git-branch ()
-  "Return current git branch, unless file is remote."
-  (if (or (null (buffer-file-name))
-          (file-remote-p (buffer-file-name))
-          (tramp-tramp-file-p (buffer-file-name)))
-      ""
-    (let ((branch (shell-command-to-string
-                   "git rev-parse --symbolic-full-name --abbrev-ref HEAD 2>/dev/null")))
-      (string-trim (replace-regexp-in-string
-                    "^HEAD" "(detached HEAD)"
-					branch)))))
+;; ----------------------------- Display Functions -----------------------------
 
 (defcustom feebleline-msg-functions
-  '((feebleline-line-number         :post "" :fmt "%5s")
-    (feebleline-column-number       :pre ":" :fmt "%-2s")
-    (feebleline-file-directory      :face feebleline-dir-face :post "")
-    (feebleline-file-or-buffer-name :face feebleline-file-or-buffer-face :post "")
-    (feebleline-file-modified-star  :face feebleline-file-or-buffer-face :post "")
-    (feebleline-git-branch          :face feebleline-git-face :pre " - ")
-    ;; (feebleline-project-name        :align right)
-    )
+  '((feebleline-line-column-info     :face default)
+	(feebleline-vc-info              :face feebleline-vc-info-face :align right)
+	(feebleline-file-directory       :face feebleline-dir-name-face :post "")
+	(feebleline-file-or-buffer-name  :face feebleline-buffer-name-face)
+	(feebleline-buffer-modified-star :face feebleline-buffer-name-face))
   "List of functions or elements to display in the echo area.
 Each element is a function giving a string to display directly or a list where:
 - The first element is the function.
@@ -147,16 +141,14 @@ Available keywords are:
   :type  '(repeat sexp)
   :group 'feebleline)
 
-(defun feebleline-linecol-string ()
+;; ------------------------ Line And Column Information ------------------------
+
+(defun feebleline-line-column-info ()
   "Return a formatted string displaying the current line and column number.
 The line number is formatted to occupy exactly 4 spaces, and the
 column number exactly 2 spaces, separated by a colon.
 For example, the string for line 120 and column 15 would be ' 120:15'."
   (format "%4s:%-2s" (format-mode-line "%l") (current-column)))
-
-(defun feebleline-previous-buffer-name ()
-  "Get name of previous buffer."
-  (buffer-name (other-buffer (current-buffer) 1)))
 
 (defun feebleline-line-number ()
   "Line number as string."
@@ -166,27 +158,56 @@ For example, the string for line 120 and column 15 would be ' 120:15'."
   "Column number as string."
   (format "%s" (current-column)))
 
+;; ------------------------ File And Buffer Information ------------------------
+
 (defun feebleline-file-directory ()
-  "Current directory, if buffer is displaying a file."
+  "Return the directory if buffer is displaying a file."
   (when (buffer-file-name)
-    (replace-regexp-in-string
-     (concat "^" feebleline--home-dir) "~"
-     default-directory)))
+	(replace-regexp-in-string
+	 (concat "^" feebleline--home-dir) "~"
+	 default-directory)))
 
 (defun feebleline-file-or-buffer-name ()
-  "Current file, or just buffer name if not a file."
+  "Return the current file name, or the buffer name if not a file."
   (if (buffer-file-name)
-      (file-name-nondirectory (buffer-file-name))
-    (buffer-name)))
+	  (file-name-nondirectory (buffer-file-name))
+	(buffer-name)))
 
-(defun feebleline-file-modified-star ()
-  "Display star if buffer file was modified."
+(defun feebleline-buffer-modified-star ()
+  "Return a star if buffer was modified."
   (when (and (buffer-file-name) (buffer-modified-p)) "*"))
 
-(defun feebleline-project-name ()
-  "Return project name if exists, otherwise nil."
-  (when (cdr (project-current))
-    (file-name-nondirectory (directory-file-name (cdr (project-current))))))
+;; ------------------------------- VC Information ------------------------------
+
+(defun feebleline-vc-project-name ()
+  "Return project name if exists."
+  (when-let ((proj (project-current)))
+	(file-name-nondirectory
+	 (directory-file-name (cdr proj)))))
+
+(defun feebleline-vc-branch ()
+  "Return current version control branch prefixed with the branch symbol.
+If file is remote or not in a repo, show nothing. Currently works with git only."
+  (if-let ((fname (buffer-file-name))
+		   (branch
+			(and fname
+				 (not (file-remote-p fname))
+				 (not (tramp-tramp-file-p fname))
+				 (vc-backend fname)
+				 (vc-state fname)
+				 (car (vc-git-branches)))))
+	  (string-trim (concat "" branch))
+	""))
+
+(defun feebleline-vc-info ()
+  "Return the concatenation of the project name and the git branch.
+When the project name doesn't exist, return nil."
+  (let ((project-name (feebleline-vc-project-name))
+		(branch (feebleline-vc-branch)))
+	(if project-name (concat project-name " " branch)
+	  nil)))
+
+;; -------------------------------- Positioning --------------------------------
 
 (defmacro feebleline-append-msg-function (&rest b)
   "Macro for adding B to the feebleline mode-line, at the end."
@@ -197,40 +218,38 @@ For example, the string for line 120 and column 15 would be ' 120:15'."
   `(add-to-list 'feebleline-msg-functions ,@b nil (lambda (x y) nil)))
 
 (defun feebleline-default-settings-on ()
-  "Some default settings that works well with feebleline."
+  "Some default settings that work well with feebleline."
   (setq window-divider-default-bottom-width 1
-        window-divider-default-places (quote bottom-only))
+		window-divider-default-places (quote bottom-only))
   (setq feebleline--window-divider-previous window-divider-mode)
   (window-divider-mode 1)
   (setq-default mode-line-format nil)
   (walk-windows (lambda (window)
-                  (with-selected-window window
-                    (setq mode-line-format nil)))
-                nil t))
+				  (with-selected-window window
+					(setq mode-line-format nil)))
+				nil t))
 
-(defun feebleline-legacy-settings-on ()
-  "Some default settings for EMACS < 25."
-  (set-face-attribute 'mode-line nil :height 0.1))
+;; ---------------------------- Insertion Functions ----------------------------
 
 (defun feebleline--insert-ignore-errors ()
   "Insert stuff into the echo area, ignoring potential errors."
   (unless (current-message)
-    (condition-case err (feebleline--insert)
-      (error (unless (equal feebleline-last-error-shown err)
-               (setq feebleline-last-error-shown err)
-               (message (format "feebleline error: %s" err)))))))
+	(condition-case err (feebleline--insert)
+	  (error (unless (equal feebleline-last-error-shown err)
+			   (setq feebleline-last-error-shown err)
+			   (message (format "feebleline error: %s" err)))))))
 
 (defun feebleline--force-insert ()
   "Insert stuff into the echo area even if it's displaying something."
   (condition-case nil (feebleline--clear-echo-area)
-    (error nil)))
+	(error nil)))
 
 (defvar feebleline--minibuf " *Minibuf-0*"
   "Buffer name used by feebleline for displaying messages.
 This buffer is primarily used to overwrite the echo area.")
 
 (cl-defun feebleline--insert-func (func &key (face 'default) pre (post " ")
-                                        (fmt "%s") (align 'left))
+										(fmt "%s") (align 'left))
   "Format an element of \='feebleline-msg-functions\=' based on its properties.
 - FUNC is the function used to generate the message.
 - FACE is an optional face to apply to the whole string, defaults to \='default.
@@ -243,49 +262,49 @@ This buffer is primarily used to overwrite the echo area.")
 
 Returns a pair with align setting and the resulting string."
   (list align
-        (let* ((msg (apply func nil))
-               (string (concat pre (format fmt msg) post)))
-          (if msg
-              (if face
-                  (propertize string 'face face)
-                string)
-            ""))))
+		(let* ((msg (apply func nil))
+			   (string (concat pre (format fmt msg) post)))
+		  (if msg
+			  (if face
+				  (propertize string 'face face)
+				string)
+			""))))
 
 (defun feebleline--insert ()
   "Insert stuff into the mini buffer."
   (unless (current-message)
-    (let ((left ())
-          (right ()))
-      (dolist (idx feebleline-msg-functions)
-        (let* ((fragment (apply 'feebleline--insert-func idx))
-               (align (car fragment))
-               (string (cadr fragment)))
-          (cond
-           ((eq align 'left)
-            (push string left))
-           ((eq align 'right)
-            (push string right))
-           (t
-            (push string left))))) ; default to left if not specified
-      (with-current-buffer feebleline--minibuf
-        (erase-buffer)
-        (let* ((left-string (string-join (reverse left)))
-               (message-truncate-lines t)
-               (max-mini-window-height 1)
-               (right-string (string-join (reverse right)))
-               (free-space (- (frame-width) (length left-string) (length right-string)))
-               (padding (make-string (max 0 free-space) ?\ )))
-          (insert (concat left-string (if right-string (concat padding right-string)))))))))
+	(let ((left ())
+		  (right ()))
+	  (dolist (idx feebleline-msg-functions)
+		(let* ((fragment (apply 'feebleline--insert-func idx))
+			   (align (car fragment))
+			   (string (cadr fragment)))
+		  (cond
+		   ((eq align 'left)
+			(push string left))
+		   ((eq align 'right)
+			(push string right))
+		   (t
+			(push string left))))) ; default to left if not specified
+	  (with-current-buffer feebleline--minibuf
+		(erase-buffer)
+		(let* ((left-string (string-join (reverse left)))
+			   (message-truncate-lines t)
+			   (max-mini-window-height 1)
+			   (right-string (string-join (reverse right)))
+			   (free-space (- (frame-width)
+							  (length left-string) (length right-string)))
+			   (padding (make-string (max 0 free-space) ?\ )))
+		  (insert (concat left-string
+						  (if right-string (concat padding
+												   right-string)))))))))
 
 (defun feebleline--clear-echo-area ()
   "Erase echo area."
   (with-current-buffer feebleline--minibuf
 	(erase-buffer)))
 
-(defgroup feebleline nil
-  "Feebleline customizations."
-  :prefix "feebleline-"
-  :group 'convenience)
+;; ------------------------------ Feebleline Mode ------------------------------
 
 ;;;###autoload
 (define-minor-mode feebleline-mode
@@ -300,38 +319,45 @@ Returns a pair with align setting and the resulting string."
 		(setq feebleline--msg-timer
 			  (run-with-timer 0 feebleline-timer-interval
 							  'feebleline--insert-ignore-errors))
-		(if feebleline-use-legacy-settings (feebleline-legacy-settings-on)
-		  (feebleline-default-settings-on))
-		(add-function :after after-focus-change-function 'feebleline--insert-ignore-errors))
+		(feebleline-default-settings-on)
+		(add-function :after after-focus-change-function
+					  'feebleline--insert-ignore-errors))
 	;; Deactivation:
 	(window-divider-mode feebleline--window-divider-previous)
 	(set-face-attribute 'mode-line nil :height 1.0)
 	(setq-default mode-line-format feebleline--mode-line-format-previous)
 	(walk-windows (lambda (window)
 					(with-selected-window window
-					  (setq mode-line-format feebleline--mode-line-format-previous)))
+					  (setq mode-line-format
+							feebleline--mode-line-format-previous)))
 				  nil t)
-    (cancel-timer feebleline--msg-timer)
-	(remove-function after-focus-change-function 'feebleline--insert-ignore-errors)
+	(cancel-timer feebleline--msg-timer)
+	(remove-function after-focus-change-function
+					 'feebleline--insert-ignore-errors)
+
 	(force-mode-line-update)
 	(redraw-display)
 	(feebleline--clear-echo-area)))
 
+;; ---------------------------- Disable And Reenable ---------------------------
+
 (defun feebleline-disable ()
-  "Neutralise \='feebleline-mode\='.
-This is meant to be used in a hook, before a conflictual command."
+  "Disable \='feebleline-mode\='.
+This is meant to be used in a hook, before a conflicting command."
   (when feebleline-mode
 	(cancel-timer feebleline--msg-timer)
-	(remove-function after-focus-change-function 'feebleline--insert-ignore-errors)))
+	(remove-function after-focus-change-function
+					 'feebleline--insert-ignore-errors)))
 
 (defun feebleline-reenable ()
   "Re-enable \='feebleline-mode\='.
-This is meant to be used in a hook, after a conflictual command."
+This is meant to be used in a hook, after a conflicting command."
   (when feebleline-mode
 	(setq feebleline--msg-timer
 		  (run-with-timer 0 feebleline-timer-interval
 						  'feebleline--insert-ignore-errors))
-	(add-function :after after-focus-change-function 'feebleline--insert-ignore-errors)))
+	(add-function :after after-focus-change-function
+				  'feebleline--insert-ignore-errors)))
 
 (provide 'feebleline)
 ;;; feebleline.el ends here
